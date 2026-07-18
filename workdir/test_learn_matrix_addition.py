@@ -3,7 +3,7 @@ import ttl
 import ttnn
 import torch
 
-TILE_SIZE = 4
+TILE_SIZE = 32
 
 # Function to convert a PyTorch tensor to a ttnn tensor with specified dtype, layout, device, and memory configuration
 def from_torch(tensor : torch.Tensor, device):
@@ -15,12 +15,15 @@ def from_torch(tensor : torch.Tensor, device):
         memory_config=ttnn.DRAM_MEMORY_CONFIG
     )
 
-@ttl.operation(grid=(1, 1))
-def operation(a : ttnn.Tensor, b : ttnn.Tensor, y : ttnn.Tensor) -> None:
+@ttl.operation(grid="full")
+def operation(a : ttnn.Tensor, b : ttnn.Tensor, y : ttnn.Tensor) -> None: # type: ignore
 
     rows = a.shape[0] // TILE_SIZE
     cols = a.shape[1] // TILE_SIZE
 
+    # shape of the dataflow buffer is (1, 1) because we are processing one tile at a time
+    # shape (Tuple[int, ...]) = Tile counts per dimension for wait/reserve operations
+    # block_count (int) =  Capacity multiplier (default 2 for double-buffering)
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
     y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
@@ -30,6 +33,7 @@ def operation(a : ttnn.Tensor, b : ttnn.Tensor, y : ttnn.Tensor) -> None:
         for r in range(rows):
             for c in range(cols):
                 with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk, y_dfb.reserve() as y_blk:
+                    x_size, y_size = ttl.grid_size(dims = 2)
                     print(y_blk, thread="pack")
                     y_blk.store(a_blk + b_blk)
                     
