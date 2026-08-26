@@ -1,0 +1,5 @@
+conda activate tt-native
+NEWLD=$(find $CONDA_PREFIX -iname "ld-linux-x86-64.so.2" | head -1)
+NEWLIBDIR=$(dirname $NEWLD)
+echo "NEWLD=$NEWLD"
+echo "NEWLIBDIR=$NEWLIBDIR"

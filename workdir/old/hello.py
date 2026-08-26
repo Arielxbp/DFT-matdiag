@@ -1,4 +1,3 @@
-# Minimal ttnn tensor round-trip — no kernels, no hardware needed.
 import numpy as np
 import ttnn
 
