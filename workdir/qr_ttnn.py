@@ -119,34 +119,29 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     shape = (4, 4)
+    num_iterations = 30
+
+    # Create a random matrix A
     torch_A = torch.rand(shape, dtype=torch.float32) * 20 - 10 # [-10, 10] range
     print(f"Original matrix A:\n{torch_A}")
-    A = to_tt_tile(torch_A)
-    Q, R = ttnn_qr(A, device)
 
-    print(f"Q matrix:\n{ttnn.to_torch(Q)}")
-    print(f"R matrix:\n{ttnn.to_torch(R)}")
+    # Create a copy of A
+    A_current = torch_A.clone()
 
-    Q = ttnn.to_torch(Q).float()
-    R = ttnn.to_torch(R).float()
+    # Convert from torch tensor to ttnn tensor
+    A = to_tt_tile(A_current)
 
-    m, n = torch_A.shape
+    for k in range(num_iterations):
 
-    print("- Check -")
+        print(f"Iteration {k+1}:")
 
-    # Check if Q * R = A
-    reconstructed_A = Q @ R
-    is_reconstructed = torch.allclose(reconstructed_A, torch_A, atol=1e-2)
-    print(f"Q * R reconstruct A: {is_reconstructed}")
+        Q, R = ttnn_qr(A, device)
+        A = ttnn.matmul(R, Q)
+        
+    # Print the final matrix A
+    print(A)
 
-    # Check if Q is orthogonal (Q.T * Q = identity matrix)
-    identity_matrix = torch.eye(n)
-    is_orthogonal = torch.allclose(Q.T @ Q, identity_matrix, atol=1e-2)
-    print(f"Q orthogonal: {is_orthogonal}")
-
-    # Check if R is upper triangular
-    lower_triangle_of_R = torch.tril(R, diagonal=-1)
-    is_triangular = torch.allclose(lower_triangle_of_R, torch.zeros_like(lower_triangle_of_R), atol=1e-2)
-    print(f"R upper triangular: {is_triangular}")
+    real_eigenvalues = torch.linalg.eigvals(ttnn.to_torch(A).float()).real
+    print(real_eigenvalues)
 
     ttnn.close_device(device)
