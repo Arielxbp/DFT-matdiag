@@ -1,6 +1,9 @@
 import ttnn
 import torch
 
+import cProfile
+import pstats
+import time
 
 def to_tt_tile(torch_tensor):
    return ttnn.from_torch(torch_tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
@@ -22,6 +25,8 @@ def ttnn_update_single_element(matrix, row, col, value, device):
     j = col
 
     m, n = matrix.shape
+
+    print(m,n)
 
     buffer = [0]*m # e_i = torch.zeros((m, 1))
     buffer[i] = 1 # e_i[i, 0] = 1
@@ -115,13 +120,13 @@ def ttnn_qr(A, device):
 if __name__ == "__main__":
 
     # useful apis reshape, squeeze, clone, add, multiply, subtract, matmul, transpose, sqrt, square, sum
-
     device = ttnn.open_device(device_id=0)
 
     shape = (4, 4)
     num_iterations = 30
 
     # Create a random matrix A
+    torch.manual_seed(0)  # For reproducibility
     torch_A = torch.rand(shape, dtype=torch.float32) * 20 - 10 # [-10, 10] range
     print(f"Original matrix A:\n{torch_A}")
 
@@ -131,13 +136,18 @@ if __name__ == "__main__":
     # Convert from torch tensor to ttnn tensor
     A = to_tt_tile(A_current)
 
-    for k in range(num_iterations):
+    start_time = time.perf_counter()
+    with cProfile.Profile() as pr:
 
-        print(f"Iteration {k+1}:")
+        for k in range(num_iterations):
 
-        Q, R = ttnn_qr(A, device)
-        A = ttnn.matmul(R, Q)
-        
+            print(f"Iteration {k+1}:")
+
+            Q, R = ttnn_qr(A, device)
+            A = ttnn.matmul(R, Q)
+
+    end_time = time.perf_counter()
+
     # Print the final matrix A
     print(A)
 
@@ -145,3 +155,11 @@ if __name__ == "__main__":
     print(real_eigenvalues)
 
     ttnn.close_device(device)
+
+    
+    elapsed_time = end_time - start_time
+    print(f"Total time for {num_iterations} iterations: {elapsed_time:.6f} seconds")
+
+    stats = pstats.Stats(pr)
+    stats.sort_stats(pstats.SortKey.TIME)
+    stats.print_stats(10)
