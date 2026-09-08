@@ -82,7 +82,6 @@ def ttnn_qr_householder(A, device):
 
         R = ttnn.subtract(R, update_R)
 
-
         R_torch = ttnn.to_torch(R)
         if i +1 < m:
             R_torch[i + 1:, i] = 0
@@ -101,8 +100,7 @@ if __name__ == "__main__":
 
     shape = (2048, 2048)
 
-    # torch_A = torch.rand(shape, dtype=torch.bfloat16)
-    torch_A = torch.randint(0, 32, (4, 4))
+    torch_A = torch.randint(0, 32, (2048, 2048))
 
     A = torch_A.clone()
 
