@@ -52,14 +52,13 @@ def zero_out_above_index(x_ttnn, i, device):
 
     m = x_ttnn.shape[0]
 
-    buffer = [0] * m * m
+    # Create the mask directly in PyTorch
+    mask_torch = torch.zeros((m, m), dtype=torch.bfloat16)
+    mask_torch[i:, i:] = torch.eye(m - i, dtype=torch.bfloat16)
     
-    for row in range(i, m):
-        buffer[row * m + row] = 1
-
-    mask = ttnn.from_buffer(buffer=buffer, shape=[m, m], dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-    new_col = ttnn.matmul(mask, x_ttnn)
-    return new_col
+    # Push to device
+    mask_ttnn = ttnn.from_torch(mask_torch, layout=ttnn.TILE_LAYOUT, device=device)
+    return ttnn.matmul(mask_ttnn, x_ttnn)
 
 def ttnn_qr_householder(A, device):
 
@@ -91,10 +90,13 @@ def ttnn_qr_householder(A, device):
 
         R = ttnn.subtract(R, update_R)
 
-        R_torch = ttnn.to_torch(R)
-        if i +1 < m:
-            R_torch[i + 1:, i] = 0
-        R = ttnn.from_torch(R_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        mask = torch.ones((m, n), dtype=torch.bfloat16)
+        if i + 1 < m:
+            mask[i + 1:, i] = 0
+
+        mask_ttnn = ttnn.from_torch(mask, layout=ttnn.TILE_LAYOUT, device=device)
+
+        R = ttnn.multiply(R, mask_ttnn)
 
         Q_v  = ttnn.matmul(Q, v)
         update_Q = ttnn.multiply(ttnn.matmul(Q_v, vT), 2)
@@ -113,7 +115,8 @@ if __name__ == "__main__":
 
     shape = (2048, 2048)
 
-    torch_A = torch.randint(0, 100, (32, 32))
+    torch.manual_seed(0)
+    torch_A = torch.randint(0, 100, (4, 4))
 
     A = torch_A.clone()
 

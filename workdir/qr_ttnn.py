@@ -25,9 +25,6 @@ def ttnn_update_single_element(matrix, row, col, value, device):
     j = col
 
     m, n = matrix.shape
-
-    print(m,n)
-
     buffer = [0]*m # e_i = torch.zeros((m, 1))
     buffer[i] = 1 # e_i[i, 0] = 1
     e_i = ttnn.from_buffer(buffer=buffer, shape=[m, 1], dtype=matrix.dtype, layout=matrix.layout, device=device)
@@ -122,12 +119,12 @@ if __name__ == "__main__":
     # useful apis reshape, squeeze, clone, add, multiply, subtract, matmul, transpose, sqrt, square, sum
     device = ttnn.open_device(device_id=0)
 
-    shape = (4, 4)
+    shape = (32,32)
     num_iterations = 30
 
     # Create a random matrix A
     torch.manual_seed(0)  # For reproducibility
-    torch_A = torch.rand(shape, dtype=torch.float32) * 20 - 10 # [-10, 10] range
+    torch_A = torch.rand(shape, dtype=torch.float32) * 100 # [0, 100] range
     print(f"Original matrix A:\n{torch_A}")
 
     # Create a copy of A
@@ -136,17 +133,16 @@ if __name__ == "__main__":
     # Convert from torch tensor to ttnn tensor
     A = to_tt_tile(A_current)
 
-    start_time = time.perf_counter()
-    with cProfile.Profile() as pr:
+    times = []
+    for _ in range(10):
+        start_time = time.perf_counter()
+        with cProfile.Profile() as pr:
+            for k in range(num_iterations):
+                Q, R = ttnn_qr(A, device)
+                A = ttnn.matmul(R, Q)
 
-        for k in range(num_iterations):
-
-            print(f"Iteration {k+1}:")
-
-            Q, R = ttnn_qr(A, device)
-            A = ttnn.matmul(R, Q)
-
-    end_time = time.perf_counter()
+        end_time = time.perf_counter()
+        times.append(end_time - start_time)
 
     # Print the final matrix A
     print(A)
@@ -156,9 +152,9 @@ if __name__ == "__main__":
 
     ttnn.close_device(device)
 
-    
-    elapsed_time = end_time - start_time
-    print(f"Total time for {num_iterations} iterations: {elapsed_time:.6f} seconds")
+    for i in range(10):
+        print(f"Time taken for iteration {i}: {times[i]:.6f} seconds")
+    print(f"Average time taken for QR decomposition: {sum(times) / 10:.6f} seconds")
 
     stats = pstats.Stats(pr)
     stats.sort_stats(pstats.SortKey.TIME)

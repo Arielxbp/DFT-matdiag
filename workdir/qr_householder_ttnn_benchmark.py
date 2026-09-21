@@ -6,6 +6,7 @@ import torch
 import cProfile
 import pstats
 import time
+import sys
 
 def to_tt_tile(torch_tensor):
    return ttnn.from_torch(torch_tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
@@ -52,14 +53,13 @@ def zero_out_above_index(x_ttnn, i, device):
 
     m = x_ttnn.shape[0]
 
-    buffer = [0] * m * m
+    # Create the mask directly in PyTorch
+    mask_vec = torch.zeros((m, 1), dtype=torch.bfloat16)
+    mask_vec[i:, 0] = 1
     
-    for row in range(i, m):
-        buffer[row * m + row] = 1
-
-    mask = ttnn.from_buffer(buffer=buffer, shape=[m, m], dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-    new_col = ttnn.matmul(mask, x_ttnn)
-    return new_col
+    # Push to device
+    mask_ttnn = ttnn.from_torch(mask_vec, layout=ttnn.TILE_LAYOUT, device=device)
+    return ttnn.multiply(x_ttnn, mask_ttnn)
 
 def ttnn_qr_householder(A, device):
 
@@ -91,10 +91,13 @@ def ttnn_qr_householder(A, device):
 
         R = ttnn.subtract(R, update_R)
 
-        R_torch = ttnn.to_torch(R)
-        if i +1 < m:
-            R_torch[i + 1:, i] = 0
-        R = ttnn.from_torch(R_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        mask = torch.ones((m, n), dtype=torch.bfloat16)
+        if i + 1 < m:
+            mask[i + 1:, i] = 0
+
+        mask_ttnn = ttnn.from_torch(mask, layout=ttnn.TILE_LAYOUT, device=device)
+
+        R = ttnn.multiply(R, mask_ttnn)
 
         Q_v  = ttnn.matmul(Q, v)
         update_Q = ttnn.multiply(ttnn.matmul(Q_v, vT), 2)
@@ -111,20 +114,51 @@ if __name__ == "__main__":
 
     device = ttnn.open_device(device_id=0)
 
-    shape = (2048, 2048)
+    # Set the shape from the passed argument
+    if len(sys.argv) > 1:
+        shape_arg = sys.argv[1]
+        shape = tuple(map(int, shape_arg.split(','))) 
+    else:
+        shape = (32, 32)
 
-    torch_A = torch.randint(0, 100, (32, 32))
+    # Set the dtype to use from the passed argument
+    if len(sys.argv) > 2:
+        dtype_arg = sys.argv[2]
+        if dtype_arg == "float32":
+            matrix_dtype = torch.float32
+        elif dtype_arg == "bfloat16":
+            matrix_dtype = torch.bfloat16
+        elif dtype_arg == "int32":
+            matrix_dtype = torch.int32
+        else:
+            raise ValueError("Unsupported dtype.")
 
-    A = torch_A.clone()
+    if len(sys.argv) > 3:
+        num_iterations = int(sys.argv[3])
+    else:
+        num_iterations = 1
 
-    A = to_tt_tile(A)
+    # example: func.py 1024,1024 int32 5
 
-    start_time = time.perf_counter()
-    with cProfile.Profile() as pr:
+    torch.manual_seed(0)  # For reproducibility
 
-        Q, R = ttnn_qr_householder(A, device)
+    if matrix_dtype == torch.int32:
+        torch_A = torch.randint(0, 100, shape)
+    else:
+        torch_A = torch.rand(shape, dtype=matrix_dtype) * 100
 
-    end_time = time.perf_counter()
+    A = to_tt_tile(torch_A)
+
+    times = []
+    
+    for _ in range(num_iterations):
+        start_time = time.perf_counter()
+        with cProfile.Profile() as pr:
+
+            Q, R = ttnn_qr_householder(A, device)
+
+        end_time = time.perf_counter()
+        times.append(end_time - start_time)
 
     print(A)
     print(Q)
@@ -132,9 +166,11 @@ if __name__ == "__main__":
 
     ttnn.close_device(device)
 
-    elapsed_time = end_time - start_time
-    print(f"Elapsed time: {elapsed_time:.6f} seconds")
+    for i in range(num_iterations):
+        print(f"Time for run {i+1}: {times[i]:.6f} seconds")
+    print(f"Average time: {sum(times) / len(times):.6f} seconds")
 
+    print("Last iteration profiling stats:")
     stats = pstats.Stats(pr)
     stats.sort_stats(pstats.SortKey.TIME)
     stats.print_stats(10)
