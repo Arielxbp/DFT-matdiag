@@ -3,6 +3,10 @@
 import ttnn
 import torch
 
+import cProfile
+import pstats
+import time
+
 def to_tt_tile(torch_tensor):
    return ttnn.from_torch(torch_tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
 
@@ -49,21 +53,29 @@ def zero_out_above_index(x_ttnn, i, device):
     m = x_ttnn.shape[0]
 
     # Create the mask directly in PyTorch
-    mask_vec = torch.zeros((m, 1), dtype=torch.bfloat16)
-    mask_vec[i:, 0] = 1
+    mask_torch = torch.zeros((m, m), dtype=torch.bfloat16)
+    mask_torch[i:, i:] = torch.eye(m - i, dtype=torch.bfloat16)
     
     # Push to device
-    mask_ttnn = ttnn.from_torch(mask_vec, layout=ttnn.TILE_LAYOUT, device=device)
-    return ttnn.multiply(x_ttnn, mask_ttnn)
+    mask_ttnn = ttnn.from_torch(mask_torch, layout=ttnn.TILE_LAYOUT, device=device)
+    return ttnn.matmul(mask_ttnn, x_ttnn)
 
 def ttnn_qr_householder(A, device):
+
+    start = time.perf_counter()
 
     m, n = A.shape
 
     R = ttnn.clone(A)    
     Q = get_identity_matrix(m, device)
 
+    end = time.perf_counter()
+    print(f"Time taken for initialization: {end - start:.6f} seconds")
+
+    tot_start = time.perf_counter()
     for i in range(n - 1):
+
+        start = time.perf_counter()
 
         current_col = ttnn.reshape(R[:, i], [m, 1])
         current_col = zero_out_above_index(current_col, i, device)
@@ -89,24 +101,43 @@ def ttnn_qr_householder(A, device):
         Q_v  = ttnn.matmul(Q, v)
         update_Q = ttnn.multiply(ttnn.matmul(Q_v, vT), 2)
         Q = ttnn.subtract(Q, update_Q)
-
+        end = time.perf_counter()
+        print(f"Time taken for iteration {i}: {end - start:.6f} seconds")
+    tot_end = time.perf_counter()
+    print(f"Total time taken for QR decomposition: {tot_end - tot_start:.6f} seconds")
     return Q, R
 
 
 if __name__ == "__main__":
 
+
     device = ttnn.open_device(device_id=0)
 
     shape = (2048, 2048)
 
-    torch.manual_seed(0) # For reproducibility
-
+    torch.manual_seed(0)
     torch_A = torch.randint(0, 100, (4, 4))
 
     A = torch_A.clone()
 
     A = to_tt_tile(A)
 
-    Q, R = ttnn_qr_householder(A, device)
+    start_time = time.perf_counter()
+    with cProfile.Profile() as pr:
+
+        Q, R = ttnn_qr_householder(A, device)
+
+    end_time = time.perf_counter()
+
+    print(A)
+    print(Q)
+    print(R)
 
     ttnn.close_device(device)
+
+    elapsed_time = end_time - start_time
+    print(f"Elapsed time: {elapsed_time:.6f} seconds")
+
+    stats = pstats.Stats(pr)
+    stats.sort_stats(pstats.SortKey.TIME)
+    stats.print_stats(10)
