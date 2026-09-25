@@ -109,4 +109,9 @@ if __name__ == "__main__":
 
     Q, R = ttnn_qr_householder(A, device)
 
+    print(A)
+    print(Q)
+    print(R)
+
     ttnn.close_device(device)
+

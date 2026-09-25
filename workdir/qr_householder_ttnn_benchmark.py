@@ -1,5 +1,3 @@
-# Updated version of qr_ttnn.py using householder reflections instead of classical Gram-Schmidt
-
 import ttnn
 import torch
 
@@ -160,9 +158,11 @@ if __name__ == "__main__":
         end_time = time.perf_counter()
         times.append(end_time - start_time)
 
+
     print(A)
     print(Q)
     print(R)
+
 
     ttnn.close_device(device)
 
