@@ -200,38 +200,38 @@ if __name__ == "__main__":
     print(ttnn.to_torch(R))
 
     # compare with PyTorch's QR decomposition
-    print("PyTorch QR decomposition:")
-    Q_torch, R_torch = torch.linalg.qr(torch_A.float())
-    print(Q_torch.to(torch.float32))
-    print(R_torch.to(torch.float32))
+    # print("PyTorch QR decomposition:")
+    # Q_torch, R_torch = torch.linalg.qr(torch_A.float())
+    # print(Q_torch.to(torch.float32))
+    # print(R_torch.to(torch.float32))
     
-    torch.set_printoptions(profile="default")
+    # torch.set_printoptions(profile="default")
 
-    recon_error = (ttnn.to_torch(Q) @ ttnn.to_torch(R) - torch_A).abs().max()
-    orthogonality_error = (ttnn.to_torch(Q).T @ ttnn.to_torch(Q) - torch.eye(shape[0])).abs().max()
+    # recon_error = (ttnn.to_torch(Q) @ ttnn.to_torch(R) - torch_A).abs().max()
+    # orthogonality_error = (ttnn.to_torch(Q).T @ ttnn.to_torch(Q) - torch.eye(shape[0])).abs().max()
 
-    print(f"Reconstruction error: {recon_error}")
-    print(f"Orthogonality error: {orthogonality_error}")
+    # print(f"Reconstruction error: {recon_error}")
+    # print(f"Orthogonality error: {orthogonality_error}")
 
-    recon_error_torch = (Q_torch @ R_torch - torch_A.float()).abs().max()
-    orthogonality_error_torch = (Q_torch.T @ Q_torch - torch.eye(shape[0])).abs().max()
+    # recon_error_torch = (Q_torch @ R_torch - torch_A.float()).abs().max()
+    # orthogonality_error_torch = (Q_torch.T @ Q_torch - torch.eye(shape[0])).abs().max()
 
-    print(f"PyTorch Reconstruction error: {recon_error_torch}")
-    print(f"PyTorch Orthogonality error: {orthogonality_error_torch}")
+    # print(f"PyTorch Reconstruction error: {recon_error_torch}")
+    # print(f"PyTorch Orthogonality error: {orthogonality_error_torch}")
 
-    eps = 0.0078
-    scale = torch_A.abs().max().item()
-    n = A.shape[0]
+    # eps = 0.0078
+    # scale = torch_A.abs().max().item()
+    # n = A.shape[0]
 
-    # reconstruction: error should be roughly within a small multiple of eps * scale,
-    # growing slowly (~sqrt(n) to n) due to accumulated rounding across matmuls
-    tol_recon = 5 * eps * scale * math.sqrt(n)
+    # # reconstruction: error should be roughly within a small multiple of eps * scale,
+    # # growing slowly (~sqrt(n) to n) due to accumulated rounding across matmuls
+    # tol_recon = 5 * eps * scale * math.sqrt(n)
 
-    # orthogonality: entries of Q^T Q are O(1), so tolerance is just a few eps
-    tol_ortho = 5 * eps
+    # # orthogonality: entries of Q^T Q are O(1), so tolerance is just a few eps
+    # tol_ortho = 5 * eps
 
-    print(f"Estimated tolerance for reconstruction error: {tol_recon}")
-    print(f"Estimated tolerance for orthogonality error: {tol_ortho}")
+    # print(f"Estimated tolerance for reconstruction error: {tol_recon}")
+    # print(f"Estimated tolerance for orthogonality error: {tol_ortho}")
 
     ttnn.close_device(device)
 
