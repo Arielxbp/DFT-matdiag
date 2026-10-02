@@ -8,8 +8,15 @@ import pstats
 import time
 import sys
 
+COMPUTE_CFG = ttnn.WormholeComputeKernelConfig(
+    math_fidelity=ttnn.MathFidelity.HiFi4,
+    math_approx_mode=False,
+    fp32_dest_acc_en=True,
+    packer_l1_acc=True,
+)
+
 def to_tt_tile(torch_tensor):
-   return ttnn.from_torch(torch_tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+   return ttnn.from_torch(torch_tensor, dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device)
 
 def ttnn_norm(x):
 
@@ -26,7 +33,7 @@ def get_identity_matrix(n, device):
     for i in range(n):
         buffer[i * n + i] = 1
 
-    identity_matrix = ttnn.from_buffer(buffer=buffer, shape=[n, n], dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+    identity_matrix = ttnn.from_buffer(buffer=buffer, shape=[n, n], dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device)
     return identity_matrix
 
 
@@ -78,13 +85,21 @@ def normalize_diagonal_signs(Q, R, device):
     R_torch = ttnn.to_torch(R).float()
     signs = torch.where(torch.diagonal(R_torch) < 0, -1.0, 1.0)
 
-    D_torch = torch.diag(signs).to(torch.bfloat16)
-    D = ttnn.from_torch(D_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+    # D_torch = torch.diag(signs).to(torch.bfloat16)
+    # D = ttnn.from_torch(D_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+    D = to_dev(torch.diag(signs))
 
-    R = ttnn.matmul(D, R)
-    Q = ttnn.matmul(Q, D)
+    R = matmul(D, R)
+    Q = matmul(Q, D)
 
     return Q, R
+
+def to_dev(t):
+    return ttnn.from_torch(t.float(), dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device)
+
+def matmul(a, b):
+    return ttnn.matmul(a, b, compute_kernel_config=COMPUTE_CFG)
+
 
 def ttnn_qr_householder_blocked(A, device, block_size=32):
 
@@ -93,35 +108,29 @@ def ttnn_qr_householder_blocked(A, device, block_size=32):
     R = ttnn.clone(A)
     Q = get_identity_matrix(m, device)
 
+    k = min(m - 1, n)
     p = 0
-    while p < n - 1:
-        b = min(block_size, (n - 1) - p)
+    while p < k:
+        b = min(block_size, k - p)
 
         R_torch = ttnn.to_torch(R).float()
-
         V_torch, R_torch = factor_panel(R_torch, p, b, m)
         T_torch = build_block_T(V_torch)
 
-        R = ttnn.from_torch(R_torch.to(torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-        V = ttnn.from_torch(V_torch.to(torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-        T = ttnn.from_torch(T_torch.to(torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        R = to_dev(R_torch)
+        V = to_dev(V_torch)
+        T = to_dev(T_torch)
 
         Vt = ttnn.transpose(V, 0, 1)
         Tt = ttnn.transpose(T, 0, 1)
-        VtR = ttnn.matmul(Vt, R)
-        TtVtR = ttnn.matmul(Tt, VtR)
-        update_R = ttnn.matmul(V, TtVtR)
+        update_R = matmul(V, matmul(Tt, matmul(Vt, R)))
 
-        trail_mask = torch.zeros((m, n), dtype=torch.bfloat16)
+        trail_mask = torch.zeros((m, n))
         trail_mask[:, p + b:] = 1
-        trail_mask_ttnn = ttnn.from_torch(trail_mask, layout=ttnn.TILE_LAYOUT, device=device)
-
-        update_R = ttnn.multiply(update_R, trail_mask_ttnn)
+        update_R = ttnn.multiply(update_R, to_dev(trail_mask))
         R = ttnn.subtract(R, update_R)
 
-        QV = ttnn.matmul(Q, V)
-        QVT = ttnn.matmul(QV, T)
-        update_Q = ttnn.matmul(QVT, Vt)
+        update_Q = matmul(matmul(matmul(Q, V), T), Vt)
         Q = ttnn.subtract(Q, update_Q)
 
         p += b
@@ -167,7 +176,7 @@ if __name__ == "__main__":
     if matrix_dtype == torch.int32:
         torch_A = torch.randint(0, 100, shape)
     else:
-        torch_A = torch.rand(shape, dtype=matrix_dtype) * 100
+        torch_A = torch.rand(shape, dtype=matrix_dtype)
 
     A = to_tt_tile(torch_A)
 
@@ -184,45 +193,50 @@ if __name__ == "__main__":
 
     # torch.set_printoptions(profile="full")
 
-    print(A)
+    print("Input matrix A:")
+    print(ttnn.to_torch(A))
 
     print("TTNN QR decomposition:")
+    print("Q matrix:")
     print(ttnn.to_torch(Q))
+    print("R matrix:")
     print(ttnn.to_torch(R))
 
     # compare with PyTorch's QR decomposition
-    # print("PyTorch QR decomposition:")
-    # Q_torch, R_torch = torch.linalg.qr(torch_A.float())
-    # print(Q_torch.to(torch.bfloat16))
-    # print(R_torch.to(torch.bfloat16))
+    print("PyTorch QR decomposition:")
+    Q_torch, R_torch = torch.linalg.qr(torch_A.float())
+    print("Q matrix:")
+    print(Q_torch)
+    print("R matrix:")
+    print(R_torch)
     
-    # torch.set_printoptions(profile="default")
+    torch.set_printoptions(profile="default")
 
-    # recon_error = (ttnn.to_torch(Q) @ ttnn.to_torch(R) - torch_A).abs().max()
-    # orthogonality_error = (ttnn.to_torch(Q).T @ ttnn.to_torch(Q) - torch.eye(shape[0])).abs().max()
+    recon_error = (ttnn.to_torch(Q) @ ttnn.to_torch(R) - torch_A).abs().max()
+    orthogonality_error = (ttnn.to_torch(Q).T @ ttnn.to_torch(Q) - torch.eye(shape[0])).abs().max()
 
-    # print(f"Reconstruction error: {recon_error}")
-    # print(f"Orthogonality error: {orthogonality_error}")
+    print(f"Reconstruction error: {recon_error}")
+    print(f"Orthogonality error: {orthogonality_error}")
 
-    # recon_error_torch = (Q_torch @ R_torch - torch_A.float()).abs().max()
-    # orthogonality_error_torch = (Q_torch.T @ Q_torch - torch.eye(shape[0])).abs().max()
+    recon_error_torch = (Q_torch @ R_torch - torch_A.float()).abs().max()
+    orthogonality_error_torch = (Q_torch.T @ Q_torch - torch.eye(shape[0])).abs().max()
 
-    # print(f"PyTorch Reconstruction error: {recon_error_torch}")
-    # print(f"PyTorch Orthogonality error: {orthogonality_error_torch}")
+    print(f"PyTorch Reconstruction error: {recon_error_torch}")
+    print(f"PyTorch Orthogonality error: {orthogonality_error_torch}")
 
-    # eps = 0.0078
-    # scale = torch_A.abs().max().item()
-    # n = A.shape[0]
+    eps = 0.0078
+    scale = torch_A.abs().max().item()
+    n = A.shape[0]
 
-    # # reconstruction: error should be roughly within a small multiple of eps * scale,
-    # # growing slowly (~sqrt(n) to n) due to accumulated rounding across matmuls
-    # tol_recon = 5 * eps * scale * math.sqrt(n)
+    # reconstruction: error should be roughly within a small multiple of eps * scale,
+    # growing slowly (~sqrt(n) to n) due to accumulated rounding across matmuls
+    tol_recon = 5 * eps * scale * math.sqrt(n)
 
-    # # orthogonality: entries of Q^T Q are O(1), so tolerance is just a few eps
-    # tol_ortho = 5 * eps
+    # orthogonality: entries of Q^T Q are O(1), so tolerance is just a few eps
+    tol_ortho = 5 * eps
 
-    # print(f"Estimated tolerance for reconstruction error: {tol_recon}")
-    # print(f"Estimated tolerance for orthogonality error: {tol_ortho}")
+    print(f"Estimated tolerance for reconstruction error: {tol_recon}")
+    print(f"Estimated tolerance for orthogonality error: {tol_ortho}")
 
     ttnn.close_device(device)
 
