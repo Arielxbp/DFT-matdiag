@@ -187,9 +187,16 @@ if __name__ == "__main__":
         times.append(time.perf_counter() - start_time)
 
     if max(shape) <= 16:
+        print("V6")
+        print("A:\n", ttnn.to_torch(A))
         print("Q:\n", ttnn.to_torch(Q))
         print("R:\n", ttnn.to_torch(R))
         print("R (torch):\n", torch.linalg.qr(torch_A)[1])
+
+    print("A:\n", ttnn.to_torch(A))
+    print("Q:\n", ttnn.to_torch(Q))
+    print("R:\n", ttnn.to_torch(R))
+    print("R (torch):\n", torch.linalg.qr(torch_A)[1])
 
     eps = measure_device_eps(device)
     print(f"Measured device matmul eps: {eps:.3e}  (true fp32 eps: {torch.finfo(torch.float32).eps:.3e})")

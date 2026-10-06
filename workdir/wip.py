@@ -14,25 +14,34 @@ COMPUTE_CFG = ttnn.WormholeComputeKernelConfig(
     packer_l1_acc=True,
 )
 
+def _hi(x):
+    return ttnn.typecast(ttnn.typecast(x, ttnn.bfloat16), ttnn.float32)
 
-# --------------------------------------------------------------------------
-# Device helpers
-# --------------------------------------------------------------------------
+def matmul_x3(a, b):
+    a_hi = _hi(a); a_lo = ttnn.subtract(a, a_hi)
+    b_hi = _hi(b); b_lo = ttnn.subtract(b, b_hi)
+    small = ttnn.add(matmul(a_hi, b_lo), matmul(a_lo, b_hi))
+    return ttnn.add(matmul(a_hi, b_hi), small)
+
+def sum_x2(t, dim, keepdim=True):
+    hi = _hi(t)
+    lo = ttnn.subtract(t, hi)
+    return ttnn.add(ttnn.sum(hi, dim=dim, keepdim=keepdim),
+                    ttnn.sum(lo, dim=dim, keepdim=keepdim))
+
+
+# convert torch tensors to ttnn tensors
 def to_dev(t, device):
     return ttnn.from_torch(t.float(), dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device)
 
-
+# ttnn.matmul wrapper with the custom fp32 config
 def matmul(a, b):
     return ttnn.matmul(a, b, compute_kernel_config=COMPUTE_CFG)
 
 
-# --------------------------------------------------------------------------
-# Householder QR with ALL arithmetic on the device.
-# Host side: Python control flow, and constant index / mask tensors (data, not math).
-# --------------------------------------------------------------------------
 def _sum_col(t):
-    """(m,1) -> (1,1): sum over rows."""
-    return ttnn.sum(t, dim=0, keepdim=True)
+
+    return sum_x2(t, dim=0, keepdim=True)
 
 
 def _one_minus(t):
@@ -40,25 +49,19 @@ def _one_minus(t):
 
 
 def _sign_flip(neg_flag):
-    """+1 where flag == 0, -1 where flag == 1."""
+
     return _one_minus(ttnn.multiply(neg_flag, 2.0))
 
 
 def factor_panel_dev(R, p, b, m, device, rows, cols):
-    """Unblocked Householder on columns p..p+b-1 of R, entirely on the device.
 
-    rows: (m,1) tensor of row indices, cols: (1,n) tensor of column indices.
-    Returns V (m,b) with unit-norm reflector vectors and the updated R.
-    Same math as the old host factor_panel: x = R[i:, i], v = (x + sgn*|x| e_i) / norm,
-    R[:, i:p+b] -= 2 v (v^T R[:, i:p+b]), then zero below the diagonal in column i.
-    """
     b_idx = to_dev(torch.arange(b, dtype=torch.float32).reshape(1, b), device)
     V = to_dev(torch.zeros((m, b)), device)
     panel_hi = ttnn.lt(cols, float(p + b))                      # (1,n): column < p+b
 
     for j in range(b):
         i = p + j
-        col = ttnn.sum(ttnn.multiply(R, ttnn.eq(cols, float(i))), dim=1, keepdim=True)  # (m,1)
+        col = sum_x2(ttnn.multiply(R, ttnn.eq(cols, float(i))), dim=1, keepdim=True)  # (m,1)
         x = ttnn.multiply(col, ttnn.ge(rows, float(i)))         # zero rows above i
         e_i = ttnn.eq(rows, float(i))                           # (m,1) one-hot
 
@@ -73,7 +76,7 @@ def factor_panel_dev(R, p, b, m, device, rows, cols):
 
         V = ttnn.add(V, ttnn.multiply(v, ttnn.eq(b_idx, float(j))))
 
-        w = ttnn.sum(ttnn.multiply(v, R), dim=0, keepdim=True)  # (1,n) = v^T R
+        w = sum_x2(ttnn.multiply(v, R), dim=0, keepdim=True)  # (1,n) = v^T R
         w = ttnn.multiply(w, ttnn.multiply(ttnn.ge(cols, float(i)), panel_hi))
         R = ttnn.subtract(R, ttnn.multiply(ttnn.multiply(v, w), 2.0))
 
@@ -84,14 +87,9 @@ def factor_panel_dev(R, p, b, m, device, rows, cols):
 
 
 def build_block_T_dev(V, b, device):
-    """T with H_1...H_b = I - V T V^T, without a host loop or a device inverse.
 
-    For unit-norm reflectors (tau = 2):  T^-1 = 0.5 * (I + N),  N = 2 * triu(V^T V, 1).
-    N is strictly upper triangular, so N^b = 0 and
-        T = 2 (I + N)^-1 = 2 (I - N)(I + N^2)(I + N^4)...   (finite product, ceil(log2 b) factors).
-    """
     Vt = ttnn.transpose(V, 0, 1)
-    S = matmul(Vt, V)                                           # (b,b)
+    S = matmul_x3(Vt, V)                                           # (b,b)
     upper = to_dev(torch.triu(torch.ones(b, b), diagonal=1), device)
     eye = to_dev(torch.eye(b), device)
 
@@ -100,15 +98,15 @@ def build_block_T_dev(V, b, device):
     Npow = N
     s = 1
     while (1 << s) < b:
-        Npow = matmul(Npow, Npow)                               # N^(2^s)
-        P = matmul(P, ttnn.add(eye, Npow))
+        Npow = matmul_x3(Npow, Npow)                               # N^(2^s)
+        P = matmul_x3(P, ttnn.add(eye, Npow))
         s += 1
     return ttnn.multiply(P, 2.0)
 
 
 def normalize_diagonal_signs(Q, R, rows, cols):
     """Make diag(R) >= 0 on the device. Q (m,m), R (m,n), any shape; QR is unchanged."""
-    diag = ttnn.sum(ttnn.multiply(R, ttnn.eq(rows, cols)), dim=1, keepdim=True)   # (m,1), 0 beyond n
+    diag = sum_x2(ttnn.multiply(R, ttnn.eq(rows, cols)), dim=1, keepdim=True)   # (m,1), 0 beyond n
     s_col = _sign_flip(ttnn.ltz(diag))                          # (m,1)
     R = ttnn.multiply(R, s_col)                                 # scale rows of R
     Q = ttnn.multiply(Q, ttnn.transpose(s_col, 0, 1))           # scale columns of Q
@@ -136,10 +134,10 @@ def ttnn_qr_householder_blocked(A, device, block_size=32):
         Tt = ttnn.transpose(T, 0, 1)
 
         if p + b < n:  # trailing columns exist
-            update_R = matmul(V, matmul(Tt, matmul(Vt, R)))
+            update_R = matmul_x3(V, matmul_x3(Tt, matmul_x3(Vt, R)))
             R = ttnn.subtract(R, ttnn.multiply(update_R, ttnn.ge(cols, float(p + b))))
 
-        update_Q = matmul(matmul(matmul(Q, V), T), Vt)
+        update_Q = matmul_x3(matmul_x3(matmul_x3(Q, V), T), Vt)
         Q = ttnn.subtract(Q, update_Q)
 
         p += b
@@ -147,9 +145,6 @@ def ttnn_qr_householder_blocked(A, device, block_size=32):
     return normalize_diagonal_signs(Q, R, rows, cols)
 
 
-# --------------------------------------------------------------------------
-# Host-side reference helper (verification only, not part of the QR)
-# --------------------------------------------------------------------------
 def apply_sign_normalization(Q, R):
     Q, R = Q.clone(), R.clone()
     s = torch.where(torch.diagonal(R) < 0, -1.0, 1.0).to(R.dtype)
@@ -159,21 +154,12 @@ def apply_sign_normalization(Q, R):
     return Q, R
 
 
-# --------------------------------------------------------------------------
-# Error metrics
-# --------------------------------------------------------------------------
 def measure_device_eps(device):
-    """Empirical relative rounding of a device fp32 matmul operand.
-
-    Computes X @ I on the device. I is exact, so any deviation from X is operand
-    truncation inside the matmul. X is drawn from [1, 2) so the relative error is
-    uniform. The result is floored at the true fp32 epsilon (1.19e-7).
-    """
-    X = 1.0 + torch.rand((32, 32), generator=torch.Generator().manual_seed(1))
-    Y = ttnn.to_torch(matmul(to_dev(X, device), to_dev(torch.eye(32), device)))
-    X, Y = X.double(), Y.double()
-    rel = ((Y - X).abs() / X).max().item()
-    return max(rel, torch.finfo(torch.float32).eps)
+    g = torch.Generator().manual_seed(1)
+    A = torch.rand(32, 32, generator=g); B = torch.rand(32, 32, generator=g)
+    Y = ttnn.to_torch(matmul(to_dev(A, device), to_dev(B, device))).double()
+    ref = A.double() @ B.double()
+    return max(((Y - ref).abs().max() / ref.abs().max()).item(), torch.finfo(torch.float32).eps)
 
 
 def qr_metrics(A, Q, R):
@@ -253,8 +239,11 @@ if __name__ == "__main__":
         times.append(time.perf_counter() - start_time)
 
     if max(shape) <= 16:
+        print("V7")
+        print("A:\n", ttnn.to_torch(A))
         print("Q:\n", ttnn.to_torch(Q))
         print("R:\n", ttnn.to_torch(R))
+        print("R (torch):\n", torch.linalg.qr(torch_A)[1])
 
     eps = measure_device_eps(device)
     print(f"Measured device matmul eps: {eps:.3e}  (true fp32 eps: {torch.finfo(torch.float32).eps:.3e})")

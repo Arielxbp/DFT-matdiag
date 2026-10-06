@@ -101,7 +101,7 @@ def ttnn_qr_householder(A, device):
         update_Q = ttnn.multiply(ttnn.matmul(Q_v, vT), 2)
         Q = ttnn.subtract(Q, update_Q)
         end = time.perf_counter()
-        print(f"Time taken for iteration {i}: {end - start:.6f} seconds")
+        # print(f"Time taken for iteration {i}: {end - start:.6f} seconds")
     tot_end = time.perf_counter()
     print(f"Total time taken for QR decomposition: {tot_end - tot_start:.6f} seconds")
     return Q, R
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     if matrix_dtype == torch.int32:
         torch_A = torch.randint(0, 100, shape)
     else:
-        torch_A = torch.rand(shape, dtype=matrix_dtype) * 100
+        torch_A = torch.rand(shape, dtype=matrix_dtype)
 
     A = to_tt_tile(torch_A)
 
@@ -158,11 +158,9 @@ if __name__ == "__main__":
         end_time = time.perf_counter()
         times.append(end_time - start_time)
 
-
-    print(A)
-    print(Q)
-    print(R)
-
+    print(ttnn.to_torch(A))
+    print(ttnn.to_torch(Q))
+    print(ttnn.to_torch(R))
 
     ttnn.close_device(device)
 
