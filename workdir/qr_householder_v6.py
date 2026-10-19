@@ -20,6 +20,15 @@ def to_dev(t, device):
 def matmul(a, b):
     return ttnn.matmul(a, b, compute_kernel_config=COMPUTE_CFG)
 
+def _hi(x):
+    return ttnn.typecast(ttnn.typecast(x, ttnn.bfloat16), ttnn.float32)
+
+def matmul_x3(a, b):
+    a_hi = _hi(a); a_lo = ttnn.subtract(a, a_hi)
+    b_hi = _hi(b); b_lo = ttnn.subtract(b, b_hi)
+    small = ttnn.add(matmul(a_hi, b_lo), matmul(a_lo, b_hi))
+    return ttnn.add(matmul(a_hi, b_hi), small)
+
 def factor_panel(R_torch, p, b, m):
     V = torch.zeros((m, b), dtype=torch.float32)
 
@@ -95,14 +104,14 @@ def ttnn_qr_householder_blocked(A, device, block_size=32):
 
         Vt = ttnn.transpose(V, 0, 1)
         Tt = ttnn.transpose(T, 0, 1)
-        update_R = matmul(V, matmul(Tt, matmul(Vt, R)))
+        update_R = matmul_x3(V, matmul_x3(Tt, matmul_x3(Vt, R)))
 
         trail_mask = torch.zeros((m, n))
         trail_mask[:, p + b:] = 1
         update_R = ttnn.multiply(update_R, to_dev(trail_mask, device))
         R = ttnn.subtract(R, update_R)
 
-        update_Q = matmul(matmul(matmul(Q, V), T), Vt)
+        update_Q = matmul_x3(matmul_x3(matmul_x3(Q, V), T), Vt)
         Q = ttnn.subtract(Q, update_Q)
 
         p += b
@@ -169,7 +178,7 @@ if __name__ == "__main__":
     num_iterations = int(sys.argv[3]) if len(sys.argv) > 3 else 1
     # example: func.py 1024,512 float32 5   (m,n need not be equal)
 
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     if dtype_arg == "float32":
         torch_A = torch.rand(shape, dtype=torch.float32)
     elif dtype_arg == "int32":
@@ -192,11 +201,6 @@ if __name__ == "__main__":
         print("Q:\n", ttnn.to_torch(Q))
         print("R:\n", ttnn.to_torch(R))
         print("R (torch):\n", torch.linalg.qr(torch_A)[1])
-
-    print("A:\n", ttnn.to_torch(A))
-    print("Q:\n", ttnn.to_torch(Q))
-    print("R:\n", ttnn.to_torch(R))
-    print("R (torch):\n", torch.linalg.qr(torch_A)[1])
 
     eps = measure_device_eps(device)
     print(f"Measured device matmul eps: {eps:.3e}  (true fp32 eps: {torch.finfo(torch.float32).eps:.3e})")
