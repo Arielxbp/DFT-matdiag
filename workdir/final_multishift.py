@@ -144,35 +144,6 @@ def apply_reflector_two_sided(stacked, v, tau, first_index):
     cols -= (cols @ v)[:, None] * tau_v
 
 
-def wy_T_from_gram(gram, taus):
-
-    # compute matrix T needed for the compact WY form, so I - VTV^T = reflectors for that panel
-
-    # get the number of reflectors 
-    width = len(taus)
-
-    # remove everything on and under the diagonal
-    t_inverse = torch.triu(gram[:width, :width].to(F64), diagonal=1)
-
-    # add on the diagonal the 1/tau elements or 1 if tau is zero
-    diagonal = torch.tensor([1.0 / tau if tau != 0.0 else 1.0 for tau in taus], dtype=F64)
-    t_inverse += torch.diag(diagonal)
-
-    # invert the upper triangular matrix by row wise back substitution
-    T_matrix = torch.zeros_like(t_inverse)
-    for row in range(width - 1, -1, -1):
-        new_row = -(t_inverse[row, row + 1:] @ T_matrix[row + 1:, :])
-        new_row[row] += 1.0
-        T_matrix[row, :] = new_row / t_inverse[row, row]
-
-    # zero the rows and columns that have tau to zero
-    for index, tau in enumerate(taus):
-        if tau == 0.0:
-            T_matrix[index, :] = 0.0
-            T_matrix[:, index] = 0.0
-    return T_matrix
-
-
 def reduce_to_hessenberg(matrix_device, size, padded_size, device):
 
     # every device operation works on the full padded matrix, so the operand shapes are the same for every panel
@@ -236,10 +207,6 @@ def reduce_to_hessenberg(matrix_device, size, padded_size, device):
         reflectors_device = to_device(reflectors, device)
         reflectors_t_device = to_device(reflectors.T, device)
 
-        # build the T of the trailing update from V^TV computed on the device
-        # (the T built column by column in the loop is still what updates the panel's own columns)
-        T = wy_T_from_gram(to_host(matmul(reflectors_t_device, reflectors_device)), taus)
-
         # right update with reflectors (columns up to panel_start get "minus 0")
         matrix_device = ttnn.subtract(matrix_device, matmul(to_device(y_block, device), reflectors_t_device))
 
@@ -272,9 +239,10 @@ def reduce_to_tridiagonal(matrix_device, size, padded_size, device):
         # get the current panel
         panel = to_host(device_columns(matrix_device, panel_start, panel_start + PANEL_WIDTH))
 
-        # init the reflectors and the update W matrices
+        # init the reflectors, the update W matrices and the WY matrix T
         reflectors = torch.zeros(padded_size, PANEL_WIDTH, dtype=F64)
         w_block = torch.zeros(padded_size, PANEL_WIDTH, dtype=F64)
+        T = torch.zeros(PANEL_WIDTH, PANEL_WIDTH, dtype=F64)
         taus = [0.0] * PANEL_WIDTH
 
         # for every column of the panel, build the reflector and the update vector
@@ -310,15 +278,22 @@ def reduce_to_tridiagonal(matrix_device, size, padded_size, device):
             a_times_v = device_matvec(matrix_device, reflectors[:, index], device)[column + 1:]
             v_prev = reflectors[column + 1:, :index]
             w_prev = w_block[column + 1:, :index]
-            w = tau * (a_times_v - w_prev @ (v_prev.T @ v) - v_prev @ (w_prev.T @ v))
+
+            # inner products of the new reflector with the earlier ones (a column of V^TV)
+            inner = v_prev.T @ v
+
+            # add the new column to T
+            T[:index, index] = -tau * (T[:index, :index] @ inner)
+            T[index, index] = tau
+
+            w = tau * (a_times_v - w_prev @ inner - v_prev @ (w_prev.T @ v))
             w -= 0.5 * tau * torch.dot(w, v) * v
             w_block[column + 1:, index] = w
 
-        # accumulate the panel's reflectors Q <- Q (I - VTV^T), with T built from V^TV computed on the device
+        # accumulate the panel's reflectors Q <- Q (I - VTV^T)
         if any(taus):
             reflectors_device = to_device(reflectors, device)
             reflectors_t_device = to_device(reflectors.T, device)
-            T = wy_T_from_gram(to_host(matmul(reflectors_t_device, reflectors_device)), taus)
             q_device = ttnn.subtract(q_device, matmul(matmul(matmul(q_device, reflectors_device), to_device(T, device)), reflectors_t_device))
 
         if panel_start + PANEL_WIDTH >= size:
