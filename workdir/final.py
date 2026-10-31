@@ -2,6 +2,7 @@ import math
 import sys
 import torch
 import ttnn
+import time
 
 TILE_SIZE = 32 # tenstorrent tiles
 PANEL_WIDTH = 32 # Householder reflectors per WY block
@@ -937,7 +938,7 @@ def report(matrix, result):
 
 if __name__ == "__main__":
 
-    DEBUG_MAX_PRINT_SIZE = 4
+    DEBUG_MAX_PRINT_SIZE = 8
     DEBUG_PRECISION = 6
 
     positional = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
@@ -951,9 +952,7 @@ if __name__ == "__main__":
         size = int(positional[0])
     if len(positional) > 1:
         symmetric = positional[1] == "symmetric"
-    if len(positional) > 2:
-        kind = positional[2]
-
+        
     # additional flags (seed, aed, gram on host)
     seed = 0
     use_aed = "auto"
@@ -974,7 +973,11 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
         try:
+            start_time = time.perf_counter()
             result = eigenvalues(matrix, device, symmetric=symmetric, use_aed=use_aed)
+            end_time = time.perf_counter() - start_time
+            print(f"Execution time: {end_time:.6f} seconds")
+            print("Computed eigenvalues:\n", result.eigenvalues)
         except RuntimeError as error:
             print(f"Failed to compute eigenvalues: {error}")
             sys.exit(1)

@@ -1,3 +1,5 @@
 ttlang/
 tutorials/
 workdir/generated/
+workdir/__pycache__/
+workdir/final_multishift_tmp_wyT.py
